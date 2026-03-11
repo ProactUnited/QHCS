@@ -1,0 +1,29 @@
+# IDE/Editor-specific files and directories
+.vscode/
+.idea/
+*.sublime-workspace
+*.swp
+.DS_Store
+
+# Build artifacts and temporary files
+/build/
+/dist/
+/temp/
+*.log
+*.tmp
+*.exe
+*.dll
+*.so
+*.o
+.next/static
+.next/cache
+.next/server
+# Dependency directories (language-specific examples)
+__pycache__/     # for Python projects
+vendor/          # for PHP or other projects using a vendor folder
+
+# Environment variables and sensitive data
+.env
+config.local.js
+*.key
+node_modules/
