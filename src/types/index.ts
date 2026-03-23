@@ -65,28 +65,52 @@ export interface MissedInstallment {
   installment_due_date: string
 }
 
-export interface CreditReport {
-  member: Member
-  score: number
-  riskLevel: 'Low' | 'Medium' | 'High'
-  loans: LoanWithRepayments[]
-  guaranteedLoans: GuaranteedLoan[]
-  missedInstallments: MissedInstallment[]
-  recommendation: string
-  reason: string
-}
-
 export interface LoanWithRepayments extends Loan {
   repayments: Repayment[]
   paidCount: number
   missedCount: number
   totalPaid: number
+  totalPending: number
 }
 
-export interface GuaranteedLoan {
+export interface GuarantorLoanBreakdown {
+  loanId: number
+  borrowerName: string
+  onTimeBonus: number
+  lateDeduction: number
+  missedDeduction: number
+  closedBonus: number
+  goldSoldDeduction: number
+  netImpact: number
+}
+
+export interface ScoreBreakdown {
+  base: number
+  onTimeBonus: number
+  lateDeduction: number
+  missedDeduction: number
+  closedBonus: number
+  goldSoldDeduction: number
+  guarantorOnTimeBonus: number
+  guarantorLateDeduction: number
+  guarantorMissedDeduction: number
+  guarantorClosedBonus: number
+  guarantorGoldSoldDeduction: number
+  guarantorNetImpact: number
+  final: number
+  guarantorBreakdowns: GuarantorLoanBreakdown[]
+}
+
+export interface GuaranteedLoanDisplay {
   loan: Loan
   borrower: Member
   borrowerScore: number
+  borrowerOnTime: number
+  borrowerLate: number
+  borrowerMissed: number
+  borrowerClosed: boolean
+  goldSold: boolean
+  guaranteedPending: number
 }
 
 export interface DashboardStats {
