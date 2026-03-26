@@ -1,349 +1,208 @@
-// // // import { NextResponse } from 'next/server'
-// // // import { createServiceClient } from '@/lib/supabase/service'
-// // // import { requireApiAuth } from '@/lib/api-auth'
-// // // import {
-// // //   calculateCreditScore,
-// // //   getRiskLevel,
-// // //   getRecommendation,
-// // //   extractBorrowerBehaviour,
-// // //   type GuarantorInput,
-// // // } from '@/lib/scoring'
+// import { NextResponse } from 'next/server'
+// import { createServiceClient } from '@/lib/supabase/service'
+// import { requireApiAuth } from '@/lib/api-auth'
+// import {
+//   calculateCreditScore,
+//   getRiskLevel,
+//   getRecommendation,
+//   extractBorrowerBehaviour,
+//   expectedMonths,
+//   paidMonthSet,
+//   type GuarantorInput,
+// } from '@/lib/scoring'
 
-// // // export async function GET(req: Request, { params }: { params: { id: string } }) {
-// // //   const unauth = await requireApiAuth()
-// // //   if (unauth) return unauth
+// export async function GET(req: Request, { params }: { params: { id: string } }) {
+//   const unauth = await requireApiAuth()
+//   if (unauth) return unauth
 
-// // //   const memberId = parseInt(params.id)
-// // //   if (isNaN(memberId)) return NextResponse.json({ error: 'Invalid member ID' }, { status: 400 })
+//   const memberId = parseInt(params.id)
+//   if (isNaN(memberId)) return NextResponse.json({ error: 'Invalid member ID' }, { status: 400 })
 
-// // //   try {
-// // //     const supabase = createServiceClient()
+//   try {
+//     const supabase = createServiceClient()
 
-// // //     // ── Fetch member, own loans, and config in parallel ────────────────────
-// // //     const [memberRes, loansRes, configRes] = await Promise.all([
-// // //       supabase.from('members').select('*').eq('member_id', memberId).single(),
-// // //       supabase.from('loans').select('*').eq('member_id', memberId),
-// // //       supabase.from('credit_score_config').select('*'),
-// // //     ])
+//     // ── Fetch member, own loans, config ───────────────────────────────────
+//     const [memberRes, loansRes, configRes] = await Promise.all([
+//       supabase.from('members').select('*').eq('member_id', memberId).single(),
+//       supabase.from('loans').select('*').eq('member_id', memberId),
+//       supabase.from('credit_score_config').select('*'),
+//     ])
 
-// // //     if (memberRes.error || !memberRes.data) {
-// // //       return NextResponse.json({ error: 'Member not found' }, { status: 404 })
-// // //     }
+//     if (memberRes.error || !memberRes.data) {
+//       return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+//     }
 
-// // //     const loans  = loansRes.data  ?? []
-// // //     const config = configRes.data ?? []
+//     const loans  = loansRes.data  ?? []
+//     const config = configRes.data ?? []
 
-// // //     // ── Own repayments & missed installments ───────────────────────────────
-// // //     const ownLoanIds = loans.map(l => l.loan_id)
+//     // ── Own repayments only — no missed_installments view needed ──────────
+//     // Missed months are computed inside the scoring engine from the schedule.
+//     const ownLoanIds = loans.map(l => l.loan_id)
+//     const { data: ownRepsData } = ownLoanIds.length
+//       ? await supabase.from('repayments').select('*').in('loan_id', ownLoanIds).limit(100000)
+//       : { data: [] as any[] }
+//     const ownRepayments = ownRepsData ?? []
 
-// // //     const [repmtsRes, missedRes] = await Promise.all([
-// // //       ownLoanIds.length
-// // //         ? supabase.from('repayments').select('*').in('loan_id', ownLoanIds)
-// // //         : Promise.resolve({ data: [] as any[] }),
-// // //       supabase.from('missed_installments').select('*').eq('member_id', memberId),
-// // //     ])
+//     // ── Loans where this member is a guarantor ────────────────────────────
+//     const { data: guaranteedLoansRaw } = await supabase
+//       .from('loans')
+//       .select('*, borrower:members!loans_member_id_fkey(member_id, member_name)')
+//       .or(
+//         `guarantor_1_id.eq.${memberId},guarantor_2_id.eq.${memberId},` +
+//         `guarantor_3_id.eq.${memberId},guarantor_4_id.eq.${memberId}`
+//       )
+//       .limit(100000)
 
-// // //     const ownRepayments        = repmtsRes.data ?? []
-// // //     const ownMissedInstallments = missedRes.data ?? []
+//     const guaranteedRaw = guaranteedLoansRaw ?? []
 
-// // //     // ── Loans where this member appears as guarantor ───────────────────────
-// // //     // NOTE: a member can simultaneously be a borrower on their own loans AND a
-// // //     // guarantor on someone else's — both paths are ALWAYS evaluated and the
-// // //     // final score consolidates both contributions into one number.
-// // //     const { data: guaranteedLoansRaw } = await supabase
-// // //       .from('loans')
-// // //       .select(`*, borrower:members!loans_member_id_fkey(member_id, member_name)`)
-// // //       .or(
-// // //         `guarantor_1_id.eq.${memberId},guarantor_2_id.eq.${memberId},` +
-// // //         `guarantor_3_id.eq.${memberId},guarantor_4_id.eq.${memberId}`
-// // //       )
+//     // ── For each guaranteed loan, fetch borrower's repayments only ────────
+//     const guarantorInputs: GuarantorInput[]  = []
+//     const guaranteedLoansForDisplay: any[]   = []
 
-// // //     const guaranteedRaw = guaranteedLoansRaw ?? []
+//     await Promise.all(
+//       guaranteedRaw.map(async (gl) => {
+//         const [borrowerRepmts, borrowerScoreRow] = await Promise.all([
+//           supabase.from('repayments').select('*').eq('loan_id', gl.loan_id).limit(100000),
+//           supabase.from('member_credit_scores').select('score').eq('member_id', gl.member_id).single(),
+//         ])
 
-// // //     // ── For each guaranteed loan, fetch the borrower's actual behaviour ────
-// // //     const guarantorInputs: GuarantorInput[]  = []
-// // //     const guaranteedLoansForDisplay: any[]   = []
+//         const bReps    = borrowerRepmts.data ?? []
+//         const behaviour = extractBorrowerBehaviour(gl, bReps)
 
-// // //     await Promise.all(
-// // //       guaranteedRaw.map(async (gl) => {
-// // //         const [borrowerRepmts, borrowerMissed, borrowerScoreRow] = await Promise.all([
-// // //           supabase.from('repayments').select('*').eq('loan_id', gl.loan_id),
-// // //           supabase.from('missed_installments').select('*').eq('loan_id', gl.loan_id),
-// // //           supabase.from('member_credit_scores').select('score').eq('member_id', gl.member_id).single(),
-// // //         ])
+//         // Calculate borrower's pending amount for this guaranteed loan
+//         const borrowerPaid = bReps.reduce((s, r) => s + Number(r.paid_amount), 0)
+//         const guaranteedPending = Number(gl.amount) - borrowerPaid
 
-// // //         const bReps   = borrowerRepmts.data ?? []
-// // //         const bMissed = borrowerMissed.data ?? []
-// // //         const behaviour = extractBorrowerBehaviour(gl, bReps, bMissed)
+//         guarantorInputs.push({
+//           loan:              { ...gl, borrowerName: gl.borrower?.member_name ?? `Member #${gl.member_id}` },
+//           borrowerBehaviour: behaviour,
+//           repayments:        bReps,
+//         })
 
-// // //         guarantorInputs.push({
-// // //           loan: { ...gl, borrowerName: gl.borrower?.member_name ?? `Member #${gl.member_id}` },
-// // //           borrowerBehaviour: behaviour,
-// // //         })
+//         guaranteedLoansForDisplay.push({
+//           loan:           gl,
+//           borrower:       gl.borrower,
+//           borrowerScore:  borrowerScoreRow.data?.score ?? 500,
+//           borrowerOnTime: behaviour.onTimeCount,
+//           borrowerLate:   behaviour.lateCount,
+//           borrowerMissed: behaviour.missedCount,
+//           borrowerClosed: behaviour.loanClosed,
+//           goldSold:       behaviour.goldSold,
+//           guaranteedPending: guaranteedPending > 0 ? guaranteedPending : 0,
+//         })
+//       })
+//     )
 
-// // //         guaranteedLoansForDisplay.push({
-// // //           loan:          gl,
-// // //           borrower:      gl.borrower,
-// // //           borrowerScore: borrowerScoreRow.data?.score ?? 50,
-// // //           borrowerOnTime: behaviour.onTimeCount,
-// // //           borrowerLate:   behaviour.lateCount,
-// // //           borrowerMissed: behaviour.missedCount,
-// // //           borrowerClosed: behaviour.loanClosed,
-// // //           goldSold:       behaviour.goldSold,
-// // //         })
-// // //       })
-// // //     )
+//     // Calculate guarantor total pending from all guaranteed loans
+//     const guarantorTotalPending = guaranteedLoansForDisplay.reduce(
+//       (sum, gl) => sum + gl.guaranteedPending, 0
+//     )
 
-// // //     // ── Consolidated score: own-borrower behaviour + guarantor exposure ────
-// // //     // A member with no own loans still gets a score from their guarantor role.
-// // //     // A member with both gets the full combined picture in one number.
-// // //     const breakdown = calculateCreditScore({
-// // //       loans,
-// // //       repayments:         ownRepayments,
-// // //       missedInstallments: ownMissedInstallments,
-// // //       guarantorInputs,
-// // //       config,
-// // //     })
+//     // ── Consolidated score ────────────────────────────────────────────────
+//     const breakdown = calculateCreditScore({
+//       loans,
+//       repayments:    ownRepayments,
+//       guarantorInputs,
+//       config,
+//     })
 
-// // //     const riskLevel = getRiskLevel(breakdown.final, breakdown.base)
-// // //     const roles = {
-// // //       isBorrower:  loans.length > 0,
-// // //       isGuarantor: guaranteedRaw.length > 0,
-// // //       isBoth:      loans.length > 0 && guaranteedRaw.length > 0,
-// // //     }
-// // //     const { recommendation, reason } = getRecommendation(breakdown.final, riskLevel, roles)
+//     const riskLevel = getRiskLevel(breakdown.final, breakdown.base)
+//     const roles = {
+//       isBorrower:  loans.length > 0,
+//       isGuarantor: guaranteedRaw.length > 0,
+//       isBoth:      loans.length > 0 && guaranteedRaw.length > 0,
+//     }
+//     const { recommendation, reason } = getRecommendation(breakdown.final, riskLevel, roles)
 
-// // //     // ── Enrich own loans for display ───────────────────────────────────────
-// // //     const loansWithRepayments = loans.map(loan => ({
-// // //       ...loan,
-// // //       repayments:  ownRepayments.filter(r => r.loan_id === loan.loan_id),
-// // //       paidCount:   ownRepayments.filter(r => r.loan_id === loan.loan_id).length,
-// // //       missedCount: ownMissedInstallments.filter(m => m.loan_id === loan.loan_id).length,
-// // //       totalPaid:   ownRepayments
-// // //         .filter(r => r.loan_id === loan.loan_id)
-// // //         .reduce((s, r) => s + Number(r.paid_amount), 0),
-// // //     }))
+//     // ── Enrich own loans for display ──────────────────────────────────────
+//     // Compute missed months in JS (same logic as scoring engine)
+//     const loansWithRepayments = loans.map(loan => {
+//       const loanReps    = ownRepayments.filter(r => r.loan_id === loan.loan_id)
+//       const paid        = paidMonthSet(loan.loan_id, ownRepayments)
+//       const missedMonths = expectedMonths(loan).filter(({ month }) => !paid.has(month))
+//       const totalPaid   = loanReps.reduce((s, r) => s + Number(r.paid_amount), 0)
+//       const totalPending = Number(loan.amount) - totalPaid
+//       return {
+//         ...loan,
+//         repayments:  loanReps,
+//         paidCount:   loanReps.length,
+//         missedCount: missedMonths.length,
+//         totalPaid,
+//         totalPending: totalPending > 0 ? totalPending : 0,
+//       }
+//     })
 
-// // //     // ── Repayment chart (own loans, last 12 months) ────────────────────────
-// // //     const chartMap: Record<string, { paid: number; missed: number }> = {}
-// // //     ownRepayments.forEach(r => {
-// // //       const m = r.paid_date.slice(0, 7)
-// // //       if (!chartMap[m]) chartMap[m] = { paid: 0, missed: 0 }
-// // //       chartMap[m].paid++
-// // //     })
-// // //     ownMissedInstallments.forEach(m => {
-// // //       const key = m.installment_due_date.slice(0, 7)
-// // //       if (!chartMap[key]) chartMap[key] = { paid: 0, missed: 0 }
-// // //       chartMap[key].missed++
-// // //     })
-// // //     const repaymentChartData = Object.entries(chartMap)
-// // //       .sort(([a], [b]) => a.localeCompare(b)).slice(-12)
-// // //       .map(([month, vals]) => ({
-// // //         month: new Date(month + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-// // //         ...vals,
-// // //       }))
+//     // Calculate own total pending
+//     const ownTotalPending = loansWithRepayments.reduce((sum, loan) => sum + loan.totalPending, 0)
 
-// // //     // ── Persist consolidated score ─────────────────────────────────────────
-// // //     await supabase.from('member_credit_scores').upsert({
-// // //       member_id:    memberId,
-// // //       score:        breakdown.final,
-// // //       last_updated: new Date().toISOString(),
-// // //     })
+//     // ── Repayment chart (last 12 months) ──────────────────────────────────
+//     const chartMap: Record<string, { paid: number; missed: number }> = {}
 
-// // //     return NextResponse.json({
-// // //       member:             memberRes.data,
-// // //       score:              breakdown.final,
-// // //       riskLevel,
-// // //       loans:              loansWithRepayments,
-// // //       guaranteedLoans:    guaranteedLoansForDisplay,
-// // //       missedInstallments: ownMissedInstallments,
-// // //       recommendation,
-// // //       reason,
-// // //       breakdown,
-// // //       repaymentChartData,
-// // //       roles,
-// // //     })
-// // //   } catch (error: any) {
-// // //     console.error('[report]', error)
-// // //     return NextResponse.json({ error: error.message }, { status: 500 })
-// // //   }
-// // // }
-// // import { NextResponse } from 'next/server'
-// // import { createServiceClient } from '@/lib/supabase/service'
-// // import { requireApiAuth } from '@/lib/api-auth'
-// // import {
-// //   calculateCreditScore,
-// //   getRiskLevel,
-// //   getRecommendation,
-// //   extractBorrowerBehaviour,
-// //   type GuarantorInput,
-// // } from '@/lib/scoring'
+//     ownRepayments.forEach(r => {
+//       const m = r.paid_date.slice(0, 7)
+//       if (!chartMap[m]) chartMap[m] = { paid: 0, missed: 0 }
+//       chartMap[m].paid++
+//     })
 
-// // export async function GET(req: Request, { params }: { params: { id: string } }) {
-// //   const unauth = await requireApiAuth()
-// //   if (unauth) return unauth
+//     // Missed months across all own loans for the chart
+//     loans.forEach(loan => {
+//       const paid = paidMonthSet(loan.loan_id, ownRepayments)
+//       expectedMonths(loan).forEach(({ month }) => {
+//         if (!paid.has(month)) {
+//           if (!chartMap[month]) chartMap[month] = { paid: 0, missed: 0 }
+//           chartMap[month].missed++
+//         }
+//       })
+//     })
 
-// //   const memberId = parseInt(params.id)
-// //   if (isNaN(memberId)) return NextResponse.json({ error: 'Invalid member ID' }, { status: 400 })
+//     const repaymentChartData = Object.entries(chartMap)
+//       .sort(([a], [b]) => a.localeCompare(b)).slice(-12)
+//       .map(([month, vals]) => ({
+//         month: new Date(month + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+//         ...vals,
+//       }))
 
-// //   try {
-// //     const supabase = createServiceClient()
+//     // ── Persist score ─────────────────────────────────────────────────────
+//     await supabase.from('member_credit_scores').upsert({
+//       member_id:    memberId,
+//       score:        breakdown.final,
+//       last_updated: new Date().toISOString(),
+//     })
 
-// //     // ── Fetch member, own loans, and config in parallel ────────────────────
-// //     const [memberRes, loansRes, configRes] = await Promise.all([
-// //       supabase.from('members').select('*').eq('member_id', memberId).single(),
-// //       supabase.from('loans').select('*').eq('member_id', memberId),
-// //       supabase.from('credit_score_config').select('*'),
-// //     ])
+//     // Build missedInstallments-like array for UI compatibility
+//     const missedInstallments = loans.flatMap(loan => {
+//       const paid = paidMonthSet(loan.loan_id, ownRepayments)
+//       return expectedMonths(loan)
+//         .filter(({ month }) => !paid.has(month))
+//         .map(({ isoDate }) => ({
+//           loan_id:               loan.loan_id,
+//           member_id:             memberId,
+//           installment_due_date:  isoDate,
+//         }))
+//     })
 
-// //     if (memberRes.error || !memberRes.data) {
-// //       return NextResponse.json({ error: 'Member not found' }, { status: 404 })
-// //     }
+//     return NextResponse.json({
+//       member:             memberRes.data,
+//       score:              breakdown.final,
+//       riskLevel,
+//       loans:              loansWithRepayments,
+//       guaranteedLoans:    guaranteedLoansForDisplay,
+//       missedInstallments,
+//       recommendation,
+//       reason,
+//       breakdown,
+//       repaymentChartData,
+//       roles,
+//       ownTotalPending,
+//       guarantorTotalPending,
+//     })
+//   } catch (error: any) {
+//     console.error('[report]', error)
+//     return NextResponse.json({ error: error.message }, { status: 500 })
+//   }
+// }
 
-// //     const loans  = loansRes.data  ?? []
-// //     const config = configRes.data ?? []
 
-// //     // ── Own repayments & missed installments ───────────────────────────────
-// //     const ownLoanIds = loans.map(l => l.loan_id)
-
-// //     const [repmtsRes, missedRes] = await Promise.all([
-// //       ownLoanIds.length
-// //         ? supabase.from('repayments').select('*').in('loan_id', ownLoanIds)
-// //         : Promise.resolve({ data: [] as any[] }),
-// //       supabase.from('missed_installments').select('*').eq('member_id', memberId),
-// //     ])
-
-// //     const ownRepayments        = repmtsRes.data ?? []
-// //     const ownMissedInstallments = missedRes.data ?? []
-
-// //     // ── Loans where this member appears as guarantor ───────────────────────
-// //     // NOTE: a member can simultaneously be a borrower on their own loans AND a
-// //     // guarantor on someone else's — both paths are ALWAYS evaluated and the
-// //     // final score consolidates both contributions into one number.
-// //     const { data: guaranteedLoansRaw } = await supabase
-// //       .from('loans')
-// //       .select(`*, borrower:members!loans_member_id_fkey(member_id, member_name)`)
-// //       .or(
-// //         `guarantor_1_id.eq.${memberId},guarantor_2_id.eq.${memberId},` +
-// //         `guarantor_3_id.eq.${memberId},guarantor_4_id.eq.${memberId}`
-// //       )
-
-// //     const guaranteedRaw = guaranteedLoansRaw ?? []
-
-// //     // ── For each guaranteed loan, fetch the borrower's actual behaviour ────
-// //     const guarantorInputs: GuarantorInput[]  = []
-// //     const guaranteedLoansForDisplay: any[]   = []
-
-// //     await Promise.all(
-// //       guaranteedRaw.map(async (gl) => {
-// //         const [borrowerRepmts, borrowerMissed, borrowerScoreRow] = await Promise.all([
-// //           supabase.from('repayments').select('*').eq('loan_id', gl.loan_id),
-// //           supabase.from('missed_installments').select('*').eq('loan_id', gl.loan_id),
-// //           supabase.from('member_credit_scores').select('score').eq('member_id', gl.member_id).single(),
-// //         ])
-
-// //         const bReps   = borrowerRepmts.data ?? []
-// //         const bMissed = borrowerMissed.data ?? []
-// //         const behaviour = extractBorrowerBehaviour(gl, bReps, bMissed)
-
-// //         guarantorInputs.push({
-// //           loan:              { ...gl, borrowerName: gl.borrower?.member_name ?? `Member #${gl.member_id}` },
-// //           borrowerBehaviour: behaviour,
-// //           // Pass the real arrays so the scoring engine can apply per-event
-// //           // recency using each payment's paid_date and each miss's due date.
-// //           // Without these, missed months on old loans would all get loan
-// //           // start_date as their recency anchor — wrong.
-// //           repayments:        bReps,
-// //           missedInstallments: bMissed,
-// //         })
-
-// //         guaranteedLoansForDisplay.push({
-// //           loan:          gl,
-// //           borrower:      gl.borrower,
-// //           borrowerScore: borrowerScoreRow.data?.score ?? 50,
-// //           borrowerOnTime: behaviour.onTimeCount,
-// //           borrowerLate:   behaviour.lateCount,
-// //           borrowerMissed: behaviour.missedCount,
-// //           borrowerClosed: behaviour.loanClosed,
-// //           goldSold:       behaviour.goldSold,
-// //         })
-// //       })
-// //     )
-
-// //     // ── Consolidated score: own-borrower behaviour + guarantor exposure ────
-// //     // A member with no own loans still gets a score from their guarantor role.
-// //     // A member with both gets the full combined picture in one number.
-// //     const breakdown = calculateCreditScore({
-// //       loans,
-// //       repayments:         ownRepayments,
-// //       missedInstallments: ownMissedInstallments,
-// //       guarantorInputs,
-// //       config,
-// //     })
-
-// //     const riskLevel = getRiskLevel(breakdown.final, breakdown.base)
-// //     const roles = {
-// //       isBorrower:  loans.length > 0,
-// //       isGuarantor: guaranteedRaw.length > 0,
-// //       isBoth:      loans.length > 0 && guaranteedRaw.length > 0,
-// //     }
-// //     const { recommendation, reason } = getRecommendation(breakdown.final, riskLevel, roles)
-
-// //     // ── Enrich own loans for display ───────────────────────────────────────
-// //     const loansWithRepayments = loans.map(loan => ({
-// //       ...loan,
-// //       repayments:  ownRepayments.filter(r => r.loan_id === loan.loan_id),
-// //       paidCount:   ownRepayments.filter(r => r.loan_id === loan.loan_id).length,
-// //       missedCount: ownMissedInstallments.filter(m => m.loan_id === loan.loan_id).length,
-// //       totalPaid:   ownRepayments
-// //         .filter(r => r.loan_id === loan.loan_id)
-// //         .reduce((s, r) => s + Number(r.paid_amount), 0),
-// //     }))
-
-// //     // ── Repayment chart (own loans, last 12 months) ────────────────────────
-// //     const chartMap: Record<string, { paid: number; missed: number }> = {}
-// //     ownRepayments.forEach(r => {
-// //       const m = r.paid_date.slice(0, 7)
-// //       if (!chartMap[m]) chartMap[m] = { paid: 0, missed: 0 }
-// //       chartMap[m].paid++
-// //     })
-// //     ownMissedInstallments.forEach(m => {
-// //       const key = m.installment_due_date.slice(0, 7)
-// //       if (!chartMap[key]) chartMap[key] = { paid: 0, missed: 0 }
-// //       chartMap[key].missed++
-// //     })
-// //     const repaymentChartData = Object.entries(chartMap)
-// //       .sort(([a], [b]) => a.localeCompare(b)).slice(-12)
-// //       .map(([month, vals]) => ({
-// //         month: new Date(month + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-// //         ...vals,
-// //       }))
-
-// //     // ── Persist consolidated score ─────────────────────────────────────────
-// //     await supabase.from('member_credit_scores').upsert({
-// //       member_id:    memberId,
-// //       score:        breakdown.final,
-// //       last_updated: new Date().toISOString(),
-// //     })
-
-// //     return NextResponse.json({
-// //       member:             memberRes.data,
-// //       score:              breakdown.final,
-// //       riskLevel,
-// //       loans:              loansWithRepayments,
-// //       guaranteedLoans:    guaranteedLoansForDisplay,
-// //       missedInstallments: ownMissedInstallments,
-// //       recommendation,
-// //       reason,
-// //       breakdown,
-// //       repaymentChartData,
-// //       roles,
-// //     })
-// //   } catch (error: any) {
-// //     console.error('[report]', error)
-// //     return NextResponse.json({ error: error.message }, { status: 500 })
-// //   }
-// // }
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { requireApiAuth } from '@/lib/api-auth'
@@ -353,7 +212,7 @@ import {
   getRecommendation,
   extractBorrowerBehaviour,
   expectedMonths,
-  paidMonthSet,
+  classifyMonth,
   type GuarantorInput,
 } from '@/lib/scoring'
 
@@ -367,7 +226,6 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   try {
     const supabase = createServiceClient()
 
-    // ── Fetch member, own loans, config ───────────────────────────────────
     const [memberRes, loansRes, configRes] = await Promise.all([
       supabase.from('members').select('*').eq('member_id', memberId).single(),
       supabase.from('loans').select('*').eq('member_id', memberId),
@@ -381,15 +239,18 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const loans  = loansRes.data  ?? []
     const config = configRes.data ?? []
 
-    // ── Own repayments only — no missed_installments view needed ──────────
-    // Missed months are computed inside the scoring engine from the schedule.
-    const ownLoanIds = loans.map(l => l.loan_id)
+    const thresholdPct = config.find(c => c.rule_name === 'partial_payment_threshold')
+      ? Math.abs(Number(config.find(c => c.rule_name === 'partial_payment_threshold')!.weight))
+      : 90
+
+    // ── Own repayments ────────────────────────────────────────────────────
+    const ownLoanIds = loans.map(l => Number(l.loan_id))
     const { data: ownRepsData } = ownLoanIds.length
       ? await supabase.from('repayments').select('*').in('loan_id', ownLoanIds).limit(100000)
       : { data: [] as any[] }
-    const ownRepayments = ownRepsData ?? []
+    const ownRepayments = (ownRepsData ?? []).map(r => ({ ...r, loan_id: Number(r.loan_id) }))
 
-    // ── Loans where this member is a guarantor ────────────────────────────
+    // ── Guaranteed loans ──────────────────────────────────────────────────
     const { data: guaranteedLoansRaw } = await supabase
       .from('loans')
       .select('*, borrower:members!loans_member_id_fkey(member_id, member_name)')
@@ -401,7 +262,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const guaranteedRaw = guaranteedLoansRaw ?? []
 
-    // ── For each guaranteed loan, fetch borrower's repayments only ────────
+    // ── For each guaranteed loan, fetch borrower repayments ───────────────
     const guarantorInputs: GuarantorInput[]  = []
     const guaranteedLoansForDisplay: any[]   = []
 
@@ -412,41 +273,41 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           supabase.from('member_credit_scores').select('score').eq('member_id', gl.member_id).single(),
         ])
 
-        const bReps    = borrowerRepmts.data ?? []
-        const behaviour = extractBorrowerBehaviour(gl, bReps)
+        // ── FIX: coerce loan_id so classifyMonth comparisons work ─────────
+        const bReps    = (borrowerRepmts.data ?? []).map((r: any) => ({ ...r, loan_id: Number(r.loan_id) }))
+        const glLoanId = Number(gl.loan_id)
+        const behaviour = extractBorrowerBehaviour({ ...gl, loan_id: glLoanId }, bReps, thresholdPct)
 
-        // Calculate borrower's pending amount for this guaranteed loan
-        const borrowerPaid = bReps.reduce((s, r) => s + Number(r.paid_amount), 0)
-        const guaranteedPending = Number(gl.amount) - borrowerPaid
+        // ── Pending amount for this guaranteed loan ────────────────────────
+        const borrowerTotalPaid = bReps.reduce((s: number, r: any) => s + Number(r.paid_amount), 0)
+        const guaranteedPending = gl.status === 'Open'
+          ? Math.max(0, Number(gl.amount) - borrowerTotalPaid)
+          : 0
 
         guarantorInputs.push({
-          loan:              { ...gl, borrowerName: gl.borrower?.member_name ?? `Member #${gl.member_id}` },
+          loan:              { ...gl, loan_id: glLoanId, borrowerName: gl.borrower?.member_name ?? `Member #${gl.member_id}` },
           borrowerBehaviour: behaviour,
           repayments:        bReps,
         })
 
         guaranteedLoansForDisplay.push({
-          loan:           gl,
-          borrower:       gl.borrower,
-          borrowerScore:  borrowerScoreRow.data?.score ?? 500,
-          borrowerOnTime: behaviour.onTimeCount,
-          borrowerLate:   behaviour.lateCount,
-          borrowerMissed: behaviour.missedCount,
-          borrowerClosed: behaviour.loanClosed,
-          goldSold:       behaviour.goldSold,
-          guaranteedPending: guaranteedPending > 0 ? guaranteedPending : 0,
+          loan:              { ...gl, loan_id: glLoanId },
+          borrower:          gl.borrower,
+          borrowerScore:     borrowerScoreRow.data?.score ?? 500,
+          borrowerOnTime:    behaviour.onTimeCount,
+          borrowerLate:      behaviour.lateCount,
+          borrowerMissed:    behaviour.missedCount,
+          borrowerClosed:    behaviour.loanClosed,
+          goldSold:          behaviour.goldSold,
+          borrowerTotalPaid,   // ← needed for "Paid So Far" in expanded view
+          guaranteedPending,   // ← needed for pending display
         })
       })
     )
 
-    // Calculate guarantor total pending from all guaranteed loans
-    const guarantorTotalPending = guaranteedLoansForDisplay.reduce(
-      (sum, gl) => sum + gl.guaranteedPending, 0
-    )
-
-    // ── Consolidated score ────────────────────────────────────────────────
+    // ── Score ─────────────────────────────────────────────────────────────
     const breakdown = calculateCreditScore({
-      loans,
+      loans:         loans.map(l => ({ ...l, loan_id: Number(l.loan_id) })),
       repayments:    ownRepayments,
       guarantorInputs,
       config,
@@ -460,44 +321,52 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     }
     const { recommendation, reason } = getRecommendation(breakdown.final, riskLevel, roles)
 
-    // ── Enrich own loans for display ──────────────────────────────────────
-    // Compute missed months in JS (same logic as scoring engine)
+    // ── Enrich own loans ──────────────────────────────────────────────────
     const loansWithRepayments = loans.map(loan => {
-      const loanReps    = ownRepayments.filter(r => r.loan_id === loan.loan_id)
-      const paid        = paidMonthSet(loan.loan_id, ownRepayments)
-      const missedMonths = expectedMonths(loan).filter(({ month }) => !paid.has(month))
-      const totalPaid   = loanReps.reduce((s, r) => s + Number(r.paid_amount), 0)
-      const totalPending = Number(loan.amount) - totalPaid
+      const loanId   = Number(loan.loan_id)
+      const loanReps = ownRepayments.filter(r => r.loan_id === loanId)
+      const totalPaid = loanReps.reduce((s, r) => s + Number(r.paid_amount), 0)
+      const beh       = extractBorrowerBehaviour({ ...loan, loan_id: loanId }, ownRepayments, thresholdPct)
+      const pending   = loan.status === 'Open'
+        ? Math.max(0, Number(loan.amount) - totalPaid)
+        : 0
       return {
         ...loan,
-        repayments:  loanReps,
-        paidCount:   loanReps.length,
-        missedCount: missedMonths.length,
+        loan_id:      loanId,
+        repayments:   loanReps,
+        paidCount:    beh.onTimeCount + beh.lateCount,
+        partialCount: beh.partialCount,   // ← partial count for UI
+        missedCount:  beh.missedCount,
         totalPaid,
-        totalPending: totalPending > 0 ? totalPending : 0,
+        pending,                           // ← pending amount for UI
       }
     })
 
-    // Calculate own total pending
-    const ownTotalPending = loansWithRepayments.reduce((sum, loan) => sum + loan.totalPending, 0)
+    // ── Summary pending figures ───────────────────────────────────────────
+    const ownTotalPending = loansWithRepayments
+      .filter(l => l.status === 'Open')
+      .reduce((s, l) => s + l.pending, 0)
+
+    const guarantorTotalPending = guaranteedLoansForDisplay
+      .reduce((s: number, gl: any) => s + gl.guaranteedPending, 0)
 
     // ── Repayment chart (last 12 months) ──────────────────────────────────
-    const chartMap: Record<string, { paid: number; missed: number }> = {}
+    const chartMap: Record<string, { paid: number; partial: number; missed: number }> = {}
 
     ownRepayments.forEach(r => {
       const m = r.paid_date.slice(0, 7)
-      if (!chartMap[m]) chartMap[m] = { paid: 0, missed: 0 }
-      chartMap[m].paid++
+      if (!chartMap[m]) chartMap[m] = { paid: 0, partial: 0, missed: 0 }
     })
 
-    // Missed months across all own loans for the chart
     loans.forEach(loan => {
-      const paid = paidMonthSet(loan.loan_id, ownRepayments)
-      expectedMonths(loan).forEach(({ month }) => {
-        if (!paid.has(month)) {
-          if (!chartMap[month]) chartMap[month] = { paid: 0, missed: 0 }
-          chartMap[month].missed++
-        }
+      const loanId     = Number(loan.loan_id)
+      const installAmt = Number(loan.installment_amount)
+      expectedMonths({ ...loan, loan_id: loanId }).forEach(({ month, overdue }) => {
+        if (!chartMap[month]) chartMap[month] = { paid: 0, partial: 0, missed: 0 }
+        const status = classifyMonth(loanId, month, installAmt, ownRepayments, thresholdPct, overdue)
+        if (status === 'full')         chartMap[month].paid++
+        else if (status === 'partial') chartMap[month].partial++
+        else                           chartMap[month].missed++
       })
     })
 
@@ -515,24 +384,28 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       last_updated: new Date().toISOString(),
     })
 
-    // Build missedInstallments-like array for UI compatibility
+    // ── Missed installments for UI ────────────────────────────────────────
     const missedInstallments = loans.flatMap(loan => {
-      const paid = paidMonthSet(loan.loan_id, ownRepayments)
-      return expectedMonths(loan)
-        .filter(({ month }) => !paid.has(month))
-        .map(({ isoDate }) => ({
-          loan_id:               loan.loan_id,
-          member_id:             memberId,
-          installment_due_date:  isoDate,
+      const loanId     = Number(loan.loan_id)
+      const installAmt = Number(loan.installment_amount)
+      return expectedMonths({ ...loan, loan_id: loanId })
+        .filter(({ month, overdue }) =>
+          classifyMonth(loanId, month, installAmt, ownRepayments, thresholdPct, overdue) !== 'full'
+        )
+        .map(({ isoDate, overdue }) => ({
+          loan_id:              loanId,
+          member_id:            memberId,
+          installment_due_date: isoDate,
+          overdue,
         }))
     })
 
     return NextResponse.json({
-      member:             memberRes.data,
-      score:              breakdown.final,
+      member:               memberRes.data,
+      score:                breakdown.final,
       riskLevel,
-      loans:              loansWithRepayments,
-      guaranteedLoans:    guaranteedLoansForDisplay,
+      loans:                loansWithRepayments,
+      guaranteedLoans:      guaranteedLoansForDisplay,
       missedInstallments,
       recommendation,
       reason,

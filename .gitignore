@@ -27,3 +27,4 @@ vendor/          # for PHP or other projects using a vendor folder
 config.local.js
 *.key
 node_modules/
+db/
