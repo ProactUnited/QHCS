@@ -78,6 +78,7 @@ export interface GuarantorLoanBreakdown {
   borrowerName: string
   onTimeBonus: number
   lateDeduction: number
+  partialDeduction: number
   missedDeduction: number
   closedBonus: number
   goldSoldDeduction: number
@@ -88,11 +89,13 @@ export interface ScoreBreakdown {
   base: number
   onTimeBonus: number
   lateDeduction: number
+  partialDeduction: number
   missedDeduction: number
   closedBonus: number
   goldSoldDeduction: number
   guarantorOnTimeBonus: number
   guarantorLateDeduction: number
+  guarantorPartialDeduction: number
   guarantorMissedDeduction: number
   guarantorClosedBonus: number
   guarantorGoldSoldDeduction: number
