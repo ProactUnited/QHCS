@@ -111,6 +111,8 @@ export interface GuaranteedLoanDisplay {
   borrowerClosed: boolean
   goldSold: boolean
   guaranteedPending: number
+  borrowerTotalPaid: number
+  borrowerRepayments: Repayment[]
 }
 
 export interface DashboardStats {

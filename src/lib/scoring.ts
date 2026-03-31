@@ -24,6 +24,7 @@ export interface GuarantorLoanBreakdown {
   borrowerName: string
   onTimeBonus: number
   lateDeduction: number
+  partialDeduction: number
   missedDeduction: number
   closedBonus: number
   goldSoldDeduction: number
@@ -34,11 +35,13 @@ export interface ScoreBreakdown {
   base: number
   onTimeBonus: number
   lateDeduction: number
-  missedDeduction: number   // includes both partial and missed penalties
+  partialDeduction: number   // partial payment penalties
+  missedDeduction: number    // missed/overdue payment penalties
   closedBonus: number
   goldSoldDeduction: number
   guarantorOnTimeBonus: number
   guarantorLateDeduction: number
+  guarantorPartialDeduction: number
   guarantorMissedDeduction: number
   guarantorClosedBonus: number
   guarantorGoldSoldDeduction: number
@@ -76,6 +79,7 @@ const DEFAULTS = {
   missed_payment_cap:          200,   // max total deduction per loan (partial + missed combined)
   loan_closed_successfully:    100,
   gold_sold:                   150,
+  loan_start_date:        20210101,   // YYYYMMDD format - only loans from this date onwards are included
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -83,6 +87,21 @@ const DEFAULTS = {
 function w(config: CreditScoreConfig[], rule: keyof typeof DEFAULTS): number {
   const val = config.find(c => c.rule_name === rule)?.weight ?? DEFAULTS[rule]
   return Math.abs(Number(val))
+}
+
+/**
+ * Get loan start date from config as YYYY-MM-DD string.
+ * The date is stored as YYYYMMDD number in the weight field.
+ * Default: 2021-01-01
+ */
+export function getLoanStartDate(config: CreditScoreConfig[]): string {
+  const val = config.find(c => c.rule_name === 'loan_start_date')?.weight ?? DEFAULTS.loan_start_date
+  const num = Number(val)
+  // Convert YYYYMMDD to YYYY-MM-DD
+  const year = Math.floor(num / 10000)
+  const month = Math.floor((num % 10000) / 100)
+  const day = num % 100
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 /**
@@ -202,6 +221,7 @@ export function classifyMonth(
 interface LoanDelta {
   onTimeBonus: number
   lateDeduction: number
+  partialDeduction: number
   missedDeduction: number
   closedBonus: number
   goldSoldDeduction: number
@@ -244,9 +264,10 @@ function loanDelta(
   const installAmt  = Number(loan.installment_amount)
   const schedule    = expectedMonths(loan)
 
-  let onTimeBonus   = 0
-  let lateDeduction = 0
-  let rawMissed     = 0   // accumulates partial + missed/overdue (positive, capped later)
+  let onTimeBonus    = 0
+  let lateDeduction  = 0
+  let rawPartial     = 0  // accumulates partial penalties (positive, capped later)
+  let rawMissed      = 0  // accumulates missed/overdue (positive, capped later)
 
   for (const { month, isoDate, overdue } of schedule) {
     const status = classifyMonth(loan.loan_id, month, installAmt, repayments, THRESHOLD, overdue)
@@ -273,7 +294,7 @@ function loanDelta(
       }
       case 'partial':
         // Partial payment: penalty applies, no on-time bonus
-        rawMissed += PARTIAL_W * rw
+        rawPartial += PARTIAL_W * rw
         break
       case 'missed':
       case 'overdue':
@@ -284,8 +305,14 @@ function loanDelta(
   }
 
   // Cap combined partial+missed deduction per loan BEFORE applying scale
-  const cappedMissed    = Math.min(rawMissed, CAP)
-  const missedDeduction = -(cappedMissed * scale)
+  const combinedRaw      = rawPartial + rawMissed
+  const cappedCombined   = Math.min(combinedRaw, CAP)
+  // Split cap proportionally between partial and missed
+  const capRatio         = combinedRaw > 0 ? cappedCombined / combinedRaw : 0
+  const cappedPartial    = rawPartial * capRatio
+  const cappedMissed     = rawMissed * capRatio
+  const partialDeduction = -(cappedPartial * scale)
+  const missedDeduction  = -(cappedMissed * scale)
 
   // ── Loan closed bonus ─────────────────────────────────────────────────────
   let closedBonus = 0
@@ -299,7 +326,7 @@ function loanDelta(
     ? -GOLD_W * recency(loan.start_date) * scale
     : 0
 
-  return { onTimeBonus, lateDeduction, missedDeduction, closedBonus, goldSoldDeduction }
+  return { onTimeBonus, lateDeduction, partialDeduction, missedDeduction, closedBonus, goldSoldDeduction }
 }
 
 // ─── Exported helpers ─────────────────────────────────────────────────────────
@@ -357,33 +384,35 @@ export function calculateCreditScore(input: ScoringInput): ScoreBreakdown {
   const BASE = w(config, 'base_score')
 
   // ── 1. Own-loan contributions ─────────────────────────────────────────────
-  let ownOnTime = 0, ownLate  = 0, ownMissed = 0
-  let ownClosed = 0, ownGold  = 0
+  let ownOnTime    = 0, ownLate    = 0, ownPartial = 0, ownMissed = 0
+  let ownClosed    = 0, ownGold     = 0
 
   for (const loan of loans) {
     const d = loanDelta(loan, repayments, config, 1.0)
-    ownOnTime += d.onTimeBonus
-    ownLate   += d.lateDeduction
-    ownMissed += d.missedDeduction
-    ownClosed += d.closedBonus
-    ownGold   += d.goldSoldDeduction
+    ownOnTime   += d.onTimeBonus
+    ownLate     += d.lateDeduction
+    ownPartial  += d.partialDeduction
+    ownMissed   += d.missedDeduction
+    ownClosed   += d.closedBonus
+    ownGold     += d.goldSoldDeduction
   }
 
   // ── 2. Guarantor contributions ────────────────────────────────────────────
-  let gOnTime = 0, gLate  = 0, gMissed = 0
+  let gOnTime = 0, gLate = 0, gPartial = 0, gMissed = 0
   let gClosed = 0, gGold  = 0
   const guarantorBreakdowns: GuarantorLoanBreakdown[] = []
 
   for (const { loan, repayments: bReps } of guarantorInputs) {
     const d = loanDelta(loan, bReps, config, GUARANTOR_SCALE)
 
-    gOnTime += d.onTimeBonus
-    gLate   += d.lateDeduction
-    gMissed += d.missedDeduction
-    gClosed += d.closedBonus
-    gGold   += d.goldSoldDeduction
+    gOnTime  += d.onTimeBonus
+    gLate    += d.lateDeduction
+    gPartial += d.partialDeduction
+    gMissed  += d.missedDeduction
+    gClosed  += d.closedBonus
+    gGold    += d.goldSoldDeduction
 
-    const net = d.onTimeBonus + d.lateDeduction + d.missedDeduction
+    const net = d.onTimeBonus + d.lateDeduction + d.partialDeduction + d.missedDeduction
               + d.closedBonus + d.goldSoldDeduction
 
     guarantorBreakdowns.push({
@@ -391,6 +420,7 @@ export function calculateCreditScore(input: ScoringInput): ScoreBreakdown {
       borrowerName:      (loan as any).borrowerName ?? `Member #${loan.member_id}`,
       onTimeBonus:       Math.round(d.onTimeBonus),
       lateDeduction:     Math.round(d.lateDeduction),
+      partialDeduction:  Math.round(d.partialDeduction),
       missedDeduction:   Math.round(d.missedDeduction),
       closedBonus:       Math.round(d.closedBonus),
       goldSoldDeduction: Math.round(d.goldSoldDeduction),
@@ -398,7 +428,7 @@ export function calculateCreditScore(input: ScoringInput): ScoreBreakdown {
     })
   }
 
-  const guarantorNetImpact = gOnTime + gLate + gMissed + gClosed + gGold
+  const guarantorNetImpact = gOnTime + gLate + gPartial + gMissed + gClosed + gGold
 
   const rawScore = BASE
     + ownOnTime + ownLate + ownMissed + ownClosed + ownGold
@@ -410,11 +440,13 @@ export function calculateCreditScore(input: ScoringInput): ScoreBreakdown {
     base:                        BASE,
     onTimeBonus:                 Math.round(ownOnTime),
     lateDeduction:               Math.round(ownLate),
+    partialDeduction:            Math.round(ownPartial),
     missedDeduction:             Math.round(ownMissed),
     closedBonus:                 Math.round(ownClosed),
     goldSoldDeduction:           Math.round(ownGold),
     guarantorOnTimeBonus:        Math.round(gOnTime),
     guarantorLateDeduction:      Math.round(gLate),
+    guarantorPartialDeduction:   Math.round(gPartial),
     guarantorMissedDeduction:    Math.round(gMissed),
     guarantorClosedBonus:        Math.round(gClosed),
     guarantorGoldSoldDeduction:  Math.round(gGold),
@@ -426,9 +458,10 @@ export function calculateCreditScore(input: ScoringInput): ScoreBreakdown {
 
 // ─── Risk & recommendation ────────────────────────────────────────────────────
 
-export function getRiskLevel(score: number, base = 500): 'Low' | 'Medium' | 'High' {
-  const max = base * 2
+export function getRiskLevel(score: number, base = 1000): 'No' | 'Low' | 'Medium' | 'High' {
+  const max = base * 1.25
   const pct = (score / max) * 100
+  if (pct >= 85) return 'No'
   if (pct >= 70) return 'Low'
   if (pct >= 40) return 'Medium'
   return 'High'
@@ -445,6 +478,10 @@ export function getRecommendation(
     ? 'Score is based entirely on guarantor exposure (no own loans on record). '
     : ''
 
+  if (riskLevel === 'No') return {
+    recommendation: 'Nothing to worry',
+    reason: `${context}Score ${score} — strong repayment history and guarantor obligations in good standing. Approval recommended.`,
+  }
   if (riskLevel === 'Low') return {
     recommendation: 'Approve',
     reason: `${context}Score ${score} — strong repayment history and guarantor obligations in good standing. Approval recommended.`,

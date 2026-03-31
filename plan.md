@@ -274,7 +274,7 @@ Every borrower event on a guaranteed loan flows to each guarantor at **50%** (GU
 
 ### Score Grades
 
-| Grade | % of max | At base=500 |
+| Grade | % of max | At base=1000 |
 |---|---|---|
 | Excellent | ≥ 85% | ≥ 850 |
 | Good | ≥ 70% | ≥ 700 |

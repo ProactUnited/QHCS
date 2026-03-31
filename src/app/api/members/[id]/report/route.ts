@@ -213,6 +213,7 @@ import {
   extractBorrowerBehaviour,
   expectedMonths,
   classifyMonth,
+  getLoanStartDate,
   type GuarantorInput,
 } from '@/lib/scoring'
 
@@ -236,8 +237,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       return NextResponse.json({ error: 'Member not found' }, { status: 404 })
     }
 
-    const loans  = loansRes.data  ?? []
+    let loans  = loansRes.data  ?? []
     const config = configRes.data ?? []
+
+    // ── Filter loans by start date (only loans from configured date onwards) ─
+    const loanStartDateStr = getLoanStartDate(config)
+    loans = loans.filter(loan => loan.start_date >= loanStartDateStr)
 
     const thresholdPct = config.find(c => c.rule_name === 'partial_payment_threshold')
       ? Math.abs(Number(config.find(c => c.rule_name === 'partial_payment_threshold')!.weight))
@@ -262,12 +267,15 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const guaranteedRaw = guaranteedLoansRaw ?? []
 
+    // Filter guarantor loans by start date (same filtering as own loans)
+    const filteredGuaranteedRaw = guaranteedRaw.filter(loan => loan.start_date >= loanStartDateStr)
+
     // ── For each guaranteed loan, fetch borrower repayments ───────────────
     const guarantorInputs: GuarantorInput[]  = []
     const guaranteedLoansForDisplay: any[]   = []
 
     await Promise.all(
-      guaranteedRaw.map(async (gl) => {
+      filteredGuaranteedRaw.map(async (gl) => {
         const [borrowerRepmts, borrowerScoreRow] = await Promise.all([
           supabase.from('repayments').select('*').eq('loan_id', gl.loan_id).limit(100000),
           supabase.from('member_credit_scores').select('score').eq('member_id', gl.member_id).single(),
@@ -301,6 +309,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           goldSold:          behaviour.goldSold,
           borrowerTotalPaid,   // ← needed for "Paid So Far" in expanded view
           guaranteedPending,   // ← needed for pending display
+          borrowerRepayments: bReps, // ← repayments for display
         })
       })
     )
@@ -316,8 +325,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const riskLevel = getRiskLevel(breakdown.final, breakdown.base)
     const roles = {
       isBorrower:  loans.length > 0,
-      isGuarantor: guaranteedRaw.length > 0,
-      isBoth:      loans.length > 0 && guaranteedRaw.length > 0,
+      isGuarantor: filteredGuaranteedRaw.length > 0,
+      isBoth:      loans.length > 0 && filteredGuaranteedRaw.length > 0,
     }
     const { recommendation, reason } = getRecommendation(breakdown.final, riskLevel, roles)
 

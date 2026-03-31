@@ -14,8 +14,9 @@ export default function ScoreBreakdownChart({ breakdown }: Props) {
     { subject: 'On-Time', value: Math.max(0, breakdown.onTimeBonus), fullMark: 40 },
     { subject: 'Closed', value: Math.max(0, breakdown.closedBonus), fullMark: 30 },
     { subject: 'Late', value: Math.max(0, -breakdown.lateDeduction), fullMark: 20 },
+    { subject: 'Partial', value: Math.max(0, -breakdown.partialDeduction), fullMark: 30 },
     { subject: 'Missed', value: Math.max(0, -breakdown.missedDeduction), fullMark: 50 },
-    { subject: 'Guarantor', value: Math.max(0, -(breakdown.guarantorLateDeduction + breakdown.guarantorMissedDeduction)), fullMark: 20 },
+    { subject: 'Guarantor', value: Math.max(0, -(breakdown.guarantorLateDeduction + breakdown.guarantorPartialDeduction + breakdown.guarantorMissedDeduction)), fullMark: 20 },
     { subject: 'Gold Sold', value: Math.max(0, -breakdown.goldSoldDeduction), fullMark: 20 },
   ]
 

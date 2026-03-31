@@ -8,7 +8,7 @@ interface ScoreGaugeProps {
   size?: number
 }
 
-export default function ScoreGauge({ score, base = 500, size = 180 }: ScoreGaugeProps) {
+export default function ScoreGauge({ score, base = 1000, size = 180 }: ScoreGaugeProps) {
   const max = base * 1.25
   const r   = 70
   const cx  = size / 2

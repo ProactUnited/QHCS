@@ -90,9 +90,9 @@ loan_id,member_id,paid_date,paid_amount
 ### Risk Levels
 | Score | Level |
 |-------|-------|
-| 70–100 | Low Risk |
-| 40–69 | Medium Risk |
-| 0–39 | High Risk |
+| >800 | Low Risk |
+| 400–800 | Medium Risk |
+| 0–390 | High Risk |
 
 ---
 

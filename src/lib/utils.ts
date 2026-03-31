@@ -91,12 +91,12 @@ export function getRiskColor(risk: string) {
 /**
  * Score colour based on percentage of max (base × 2).
  * Accepts optional base so it scales with whatever base_score is configured.
- * Default base = 500, so max = 1000.
+ * Default base = 1000, so max = 1250.
  *   ≥ 70% of max → green   (≥700 at base 500)
  *   ≥ 40% of max → amber   (≥400 at base 500)
  *   <  40% of max → red    ( <400 at base 500)
  */
-export function getScoreColor(score: number, base = 500): string {
+export function getScoreColor(score: number, base = 1000): string {
   const max = base * 1.25
   const pct = (score / max) * 100
   if (pct >= 90) return '#34d399' // emerald
@@ -112,12 +112,12 @@ export function getScoreColor(score: number, base = 500): string {
  *   ≥ 40% → Poor
  *   <  40% → Critical
  */
-export function getScoreGrade(score: number, base = 500): string {
+export function getScoreGrade(score: number, base = 1000): string {
   const max = base * 1.25
   const pct = (score / max) * 100
   if (pct >= 90) return 'Excellent'
   if (pct >= 80) return 'Good'
-  if (pct >= 65) return 'Fair'
-  if (pct >= 40) return 'Poor'
+  if (pct >= 60) return 'Fair'
+  if (pct >= 30) return 'Poor'
   return 'Critical'
 }

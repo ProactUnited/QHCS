@@ -895,12 +895,14 @@ function LoanRow({ loan }: { loan: EnrichedLoan }) {
                 <>
                   <div className="text-xs text-slate-500 font-semibold uppercase tracking-widest mb-2">Repayments</div>
                   <div className="max-h-36 overflow-y-auto space-y-1">
-                    {loan.repayments.map((r, i) => (
-                      <div key={i} className="flex justify-between text-xs py-1 border-b border-white/[0.03]">
-                        <span className="text-slate-400 font-mono">{formatDate(r.paid_date)}</span>
-                        <span className="text-emerald-400 font-mono">{formatCurrency(Number(r.paid_amount))}</span>
-                      </div>
-                    ))}
+                    {[...loan.repayments]
+                      .sort((a, b) => new Date(b.paid_date).getTime() - new Date(a.paid_date).getTime())
+                      .map((r, i) => (
+                        <div key={i} className="flex justify-between text-xs py-1 border-b border-white/[0.03]">
+                          <span className="text-slate-400 font-mono">{formatDate(r.paid_date)}</span>
+                          <span className="text-emerald-400 font-mono">{formatCurrency(Number(r.paid_amount))}</span>
+                        </div>
+                      ))}
                   </div>
                 </>
               )}
@@ -1046,6 +1048,8 @@ function GuarantorLoanCard({ gl, breakdown }: {
             <div className="flex items-center gap-2 mt-px flex-wrap">
               <span className="text-xs text-slate-500 font-mono">Loan #{gl.loan.loan_id}</span>
               <span className="text-xs text-slate-500">{formatCurrency(Number(gl.loan.amount))}</span>
+              <span className="text-xs text-slate-500">• {gl.loan.purpose || 'General Loan'}</span>
+              <span className="text-xs text-slate-500">• {formatDate(gl.loan.start_date)}</span>
               <StatusBadge status={gl.loan.status} />
               {/* ── pending shown in collapsed header ── */}
               {gl.guaranteedPending > 0 && (
@@ -1128,8 +1132,9 @@ function GuarantorLoanCard({ gl, breakdown }: {
               </div>
               <div className="space-y-1.5">
                 {[
-                  { label: 'On-Time Payments',   val: breakdown.onTimeBonus       },
+                  { label: 'On-Time Payments',    val: breakdown.onTimeBonus       },
                   { label: 'Late Payments',       val: breakdown.lateDeduction     },
+                  { label: 'Partial Payments',    val: breakdown.partialDeduction  },
                   { label: 'Missed Installments', val: breakdown.missedDeduction   },
                   { label: 'Loan Closed',         val: breakdown.closedBonus       },
                   { label: 'Gold Sold',           val: breakdown.goldSoldDeduction },
@@ -1147,6 +1152,25 @@ function GuarantorLoanCard({ gl, breakdown }: {
                   <DeltaPill value={breakdown.netImpact} />
                 </div>
               </div>
+
+              {/* Borrower Repayment History */}
+              {gl.borrowerRepayments && gl.borrowerRepayments.length > 0 && (
+                <>
+                  <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-widest mt-4 mb-2">
+                    Borrower Repayment History
+                  </div>
+                  <div className="max-h-36 overflow-y-auto space-y-1">
+                    {[...gl.borrowerRepayments]
+                      .sort((a, b) => new Date(b.paid_date).getTime() - new Date(a.paid_date).getTime())
+                      .map((r, i) => (
+                        <div key={i} className="flex justify-between text-xs py-1 border-b border-white/[0.03]">
+                          <span className="text-slate-400 font-mono">{formatDate(r.paid_date)}</span>
+                          <span className="text-emerald-400 font-mono">{formatCurrency(Number(r.paid_amount))}</span>
+                        </div>
+                      ))}
+                  </div>
+                </>
+              )}
             </div>
           </motion.div>
         )}
@@ -1320,9 +1344,10 @@ export default function ReportPage() {
                     { label: '+ On-Time',     val: `+${breakdown.onTimeBonus}`,      col: 'text-emerald-400' },
                     { label: '+ Loan Closed', val: `+${breakdown.closedBonus}`,      col: 'text-emerald-400' },
                     { label: '− Late',        val: `${breakdown.lateDeduction}`,     col: 'text-amber-400'   },
+                    { label: '− Partial',     val: `${breakdown.partialDeduction}`,  col: 'text-orange-400'  },
                     { label: '− Missed',      val: `${breakdown.missedDeduction}`,   col: 'text-red-400'     },
                     { label: '− Gold Sold',   val: `${breakdown.goldSoldDeduction}`, col: 'text-red-400'     },
-                  ].map(r => (
+                  ].filter(r => !r.label.includes('Partial') || r.val !== '0').map(r => (
                     <div key={r.label} className="flex justify-between border-b border-white/[0.04] pb-1">
                       <span className="text-slate-500">{r.label}</span>
                       <span className={`font-mono font-medium ${r.col}`}>{r.val}</span>
@@ -1338,6 +1363,7 @@ export default function ReportPage() {
                         { label: '+ Borrower On-Time',   val: `+${breakdown.guarantorOnTimeBonus}`,      col: 'text-emerald-400' },
                         { label: '+ Borrower Closed',    val: `+${breakdown.guarantorClosedBonus}`,      col: 'text-emerald-400' },
                         { label: '− Borrower Late',      val: `${breakdown.guarantorLateDeduction}`,     col: 'text-amber-400'   },
+                        { label: '− Borrower Partial',   val: `${breakdown.guarantorPartialDeduction}`,  col: 'text-orange-400' },
                         { label: '− Borrower Missed',    val: `${breakdown.guarantorMissedDeduction}`,   col: 'text-red-400'     },
                         { label: '− Borrower Gold Sold', val: `${breakdown.guarantorGoldSoldDeduction}`, col: 'text-red-400'     },
                       ].filter(r => r.val !== '+0' && r.val !== '0').map(r => (
@@ -1423,7 +1449,9 @@ export default function ReportPage() {
             </div>
             {loans.length === 0
               ? <p className="text-sm text-slate-500 text-center py-6">No loans on record</p>
-              : <div className="space-y-2">{loans.map(l => <LoanRow key={l.loan_id} loan={l} />)}</div>
+              : <div className="space-y-2">{[...loans]
+                .sort((a, b) => new Date(b.start_date).getTime() - new Date(a.start_date).getTime())
+                .map(l => <LoanRow key={l.loan_id} loan={l} />)}</div>
             }
           </Card>
         </motion.div>

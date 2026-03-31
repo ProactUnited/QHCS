@@ -611,11 +611,16 @@ import { Card, PageHeader, Button, Input } from '@/components/ui'
 import type { CreditScoreConfig } from '@/types'
 
 // Rules that actually exist in the scoring engine
-const RULE_META: Record<string, { label: string; desc: string; sign: '+' | '-' | '=' | '⌀' | '%' }> = {
+const RULE_META: Record<string, { label: string; desc: string; sign: '+' | '-' | '=' | '⌀' | '%' | '📅' }> = {
   base_score: {
     label: 'Base Score',
     desc: 'Starting score for every member before any loan behaviour is applied.',
     sign: '=',
+  },
+  loan_start_date: {
+    label: 'Loan Start Date',
+    desc: 'Only loans from this date onwards will be included in credit score calculations. Loans and repayments before this date are excluded.',
+    sign: '📅',
   },
   on_time_payment: {
     label: 'On-Time Payment',
@@ -662,6 +667,7 @@ const RULE_META: Record<string, { label: string; desc: string; sign: '+' | '-' |
 // Display order
 const RULE_ORDER = [
   'base_score',
+  'loan_start_date',
   'on_time_payment',
   'late_payment',
   'missed_payment',
@@ -691,10 +697,36 @@ export default function SettingsPage() {
       })
   }, [])
 
+  // Convert YYYYMMDD number to YYYY-MM-DD string for date input
+  const weightToDateString = (weight: number): string => {
+    const num = Math.abs(Number(weight))
+    const year = Math.floor(num / 10000)
+    const month = Math.floor((num % 10000) / 100)
+    const day = num % 100
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  // Convert YYYY-MM-DD string to YYYYMMDD number
+  const dateStringToWeight = (dateStr: string): number => {
+    const parts = dateStr.split('-')
+    if (parts.length !== 3) return 20210101
+    const year = parseInt(parts[0])
+    const month = parseInt(parts[1])
+    const day = parseInt(parts[2])
+    return year * 10000 + month * 100 + day
+  }
+
   const updateWeight = (rule: string, val: string) => {
-    setConfig(prev =>
-      prev.map(c => c.rule_name === rule ? { ...c, weight: Math.max(0, parseInt(val) || 0) } : c)
-    )
+    if (rule === 'loan_start_date') {
+      // Date field - store as YYYYMMDD number
+      setConfig(prev =>
+        prev.map(c => c.rule_name === rule ? { ...c, weight: dateStringToWeight(val) } : c)
+      )
+    } else {
+      setConfig(prev =>
+        prev.map(c => c.rule_name === rule ? { ...c, weight: Math.max(0, parseInt(val) || 0) } : c)
+      )
+    }
     setSaved(false)
   }
 
@@ -730,7 +762,7 @@ export default function SettingsPage() {
             <Info size={15} className="text-sky-400 mt-0.5 shrink-0" />
             <div className="text-sm text-slate-400 space-y-1 leading-relaxed">
               <p>
-                Base score is <strong className="text-white">500</strong>. Each rule adjusts the score
+                Base score is <strong className="text-white">1000</strong>. Each rule adjusts the score
                 per event, multiplied by a recency factor (≤12 mo: ×1.5, ≤24 mo: ×1.2, older: ×1.0).
                 Missed payments are capped at <strong className="text-white">Missed Payment Cap</strong> per loan.
               </p>
@@ -795,7 +827,9 @@ export default function SettingsPage() {
                           meta.sign === '=' ? 'text-sky-400' :
                           meta.sign === '⌀' ? 'text-orange-400' :
                           meta.sign === '%' ? 'text-violet-400' :
-                          'text-red-400'}`}>
+                          meta.sign === '📅' ? 'text-pink-400' :
+                          'text-red-400'}`}
+                        >
                           {meta.sign}
                         </span>
                         <span className="text-sm font-medium text-slate-200">{meta.label}</span>
@@ -803,22 +837,36 @@ export default function SettingsPage() {
                       <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{meta.desc}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Input
-                        type="number"
-                        value={Math.abs(rule.weight)}
-                        onChange={e => updateWeight(rule.rule_name, e.target.value)}
-                        className="w-20 text-center font-mono"
-                        min={0}
-                        max={
-                          rule.rule_name === 'base_score'               ? 9999 :
-                          rule.rule_name === 'missed_payment_cap'        ? 9999 :
-                          rule.rule_name === 'partial_payment_threshold' ? 100  :
-                          500
-                        }
-                      />
-                      <span className="text-xs text-slate-500 w-6">
-                        {rule.rule_name === 'partial_payment_threshold' ? '%' : 'pts'}
-                      </span>
+                      {rule.rule_name === 'loan_start_date' ? (
+                        <>
+                          <Input
+                            type="date"
+                            value={weightToDateString(rule.weight)}
+                            onChange={e => updateWeight(rule.rule_name, e.target.value)}
+                            className="w-36 text-center font-mono"
+                          />
+                          <span className="text-xs text-slate-500 w-8"></span>
+                        </>
+                      ) : (
+                        <>
+                          <Input
+                            type="number"
+                            value={Math.abs(rule.weight)}
+                            onChange={e => updateWeight(rule.rule_name, e.target.value)}
+                            className="w-20 text-center font-mono"
+                            min={0}
+                            max={
+                              rule.rule_name === 'base_score'               ? 9999 :
+                              rule.rule_name === 'missed_payment_cap'        ? 9999 :
+                              rule.rule_name === 'partial_payment_threshold' ? 100  :
+                              500
+                            }
+                          />
+                          <span className="text-xs text-slate-500 w-6">
+                            {rule.rule_name === 'partial_payment_threshold' ? '%' : 'pts'}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </motion.div>
                 )
@@ -830,11 +878,11 @@ export default function SettingsPage() {
         {/* Risk level reference */}
         <Card className="mt-4">
           <h3 className="font-display font-semibold text-white text-sm mb-1">Risk Level Reference</h3>
-          <p className="text-xs text-slate-500 mb-4">Thresholds are % of max score (Base × 2). Low ≥ 70%, Medium ≥ 40%, High &lt; 40%.</p>
+          <p className="text-xs text-slate-500 mb-4">Thresholds are % of max score (Base × 2). Low ≥ 80%, Medium ≥ 40%, High &lt; 40%.</p>
           <div className="grid grid-cols-3 gap-3 text-center text-xs">
             {[
-              { range: '≥ 70%', label: 'Low Risk',    color: 'emerald', example: '700+' },
-              { range: '40–69%', label: 'Medium Risk', color: 'amber',   example: '400–699' },
+              { range: '≥ 80%', label: 'Low Risk',    color: 'emerald', example: '800+' },
+              { range: '40–79%', label: 'Medium Risk', color: 'amber',   example: '400–799' },
               { range: '< 40%',  label: 'High Risk',   color: 'red',     example: '0–399' },
             ].map(r => (
               <div
