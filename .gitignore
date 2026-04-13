@@ -15,6 +15,7 @@
 *.dll
 *.so
 *.o
+# .next
 .next/static
 .next/cache
 .next/server
