@@ -16,7 +16,8 @@ interface Stats {
   missedInstallmentsCount: number
   highRiskMembers: number
   avgCreditScore: number
-  monthlyActivity: { month: string; repayments: number; missed: number }[]
+  // monthlyActivity: { month: string; repayments: number; missed: number }[]
+  monthlyActivity: { month: string; repayments: number; partial: number; missed: number }[]
   riskDistribution: { name: string; value: number; color: string }[]
 }
 
